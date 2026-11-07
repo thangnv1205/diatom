@@ -115,7 +115,12 @@ bool diatom_core_open(diatom_core *c, const char *path)
  * finds it, rather than opening it a second time. Entries are never moved or
  * removed, so a pointer handed out stays good after the lock is let go.
  */
-#define MAX_RESIDENT 8
+#define MAX_RESIDENT 32
+/* Premap stops here: the RAM bound measured above. Cores past it still open
+ * on demand at RUN, so a card with more cores than this loses only the warm
+ * start on the extras. Before this split the ninth core failed outright with
+ * core_missing (TrimUI Brick, 10 cores on the card, 2026-11-07). */
+#define MAX_PREMAP 12
 static diatom_core      g_resident[MAX_RESIDENT];
 static char             g_resident_path[MAX_RESIDENT][1024];
 static int              g_nresident;
@@ -181,6 +186,7 @@ int diatom_core_premap(const char *dir)
 
 		if (len < 12 || strcmp(e->d_name + len - 12, "_libretro.so") != 0)
 			continue;
+		if (n >= MAX_PREMAP) break;
 		snprintf(path, sizeof path, "%s/%s", dir, e->d_name);
 		if (diatom_core_resident(path)) n++;
 	}

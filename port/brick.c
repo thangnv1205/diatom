@@ -112,6 +112,10 @@ static diatom_tap  *g_colmap, *g_rowmap;
 static int          g_map_src_w = -1, g_map_src_h = -1;
 static diatom_rect  g_map_dst;
 static diatom_filter g_map_filter;
+/* SCANLINE and GRID: which panel rows and columns, relative to dst, are the
+ * last of their source pixel and get dimmed. NULL when the filter has none,
+ * or the scale leaves no room for a gap. */
+static uint8_t      *g_dim_row, *g_dim_col;
 static bool          g_map_valid;
 
 /* Output gain, by ioctl on /dev/snd/controlC0.
@@ -1196,7 +1200,7 @@ static diatom_tap *build_map(int src, int dst, diatom_filter filter)
 		if (p < 0)        { p = 0;       fr = 0.0; }
 		if (p >= src - 1) { p = src - 1; fr = 0.0; }
 
-		if (filter == DIATOM_FILTER_NEAREST) {
+		if (filter != DIATOM_FILTER_SHARP) {   /* the dimmed ones sample nearest */
 			if (fr >= 0.5 && p + 1 < src) p++;
 			fr = 0.0;
 		}
@@ -1217,6 +1221,32 @@ static diatom_tap *build_map(int src, int dst, diatom_filter filter)
 	return m;
 }
 
+/* The panel pixels that end a source pixel, for SCANLINE and GRID: where the
+ * next one samples a different source index. NULL below a 2x scale, where a
+ * gap would take half of every pixel and read as a darker picture rather than
+ * as lines. Built with the maps, so the per-frame cost is a byte test. */
+static uint8_t *gap_mask(const diatom_tap *m, int dst, int src)
+{
+	uint8_t *g;
+	int i;
+
+	if (!m || src <= 0 || dst < 2 * src) return NULL;
+	g = calloc((size_t)dst, 1);
+	if (!g) return NULL;
+	for (i = 0; i + 1 < dst; i++)
+		g[i] = m[i].idx != m[i + 1].idx;
+	g[dst - 1] = 1;
+	return g;
+}
+
+/* Three quarters of the light, alpha kept: two shifts and an add, no unpack.
+ * A half reads as black stripes on the Brick's panel; a quarter off reads as
+ * the gaps between a CRT's lines or an LCD's cells. */
+static inline uint32_t dim(uint32_t p, uint32_t opaque)
+{
+	return (((p >> 1) & 0x7F7F7F7Fu) + ((p >> 2) & 0x3F3F3F3Fu)) | opaque;
+}
+
 static bool ensure_maps(int src_w, int src_h, diatom_rect dst,
                         diatom_filter filter)
 {
@@ -1235,6 +1265,14 @@ static bool ensure_maps(int src_w, int src_h, diatom_rect dst,
 	g_map_src_h = src_h;
 	g_map_dst   = dst;
 	g_map_filter = filter;
+
+	free(g_dim_row); g_dim_row = NULL;
+	free(g_dim_col); g_dim_col = NULL;
+	if (filter == DIATOM_FILTER_SCANLINE || filter == DIATOM_FILTER_GRID) {
+		g_dim_row = gap_mask(g_rowmap, dst.h, src_h);
+		if (filter == DIATOM_FILTER_GRID)
+			g_dim_col = gap_mask(g_colmap, dst.w, src_w);
+	}
 	return true;
 }
 
@@ -1417,6 +1455,15 @@ static void blit(uint8_t *page, const void *src, int w, int h, size_t pitch,
 
 		if (ty.w) BLIT_ROW_BLEND();
 		else      BLIT_ROW_NEAREST();
+
+		if (g_dim_row && g_dim_row[y - dst.y]) {
+			int x;
+			for (x = x0; x < x1; x++) out[x] = dim(out[x], opaque);
+		} else if (g_dim_col) {
+			int x;
+			for (x = x0; x < x1; x++)
+				if (g_dim_col[x - dst.x]) out[x] = dim(out[x], opaque);
+		}
 
 		/* Drawn in ordinary memory, then copied to the page and to the
 		 * notice's slice of it - two writes, and never a read of the page. */

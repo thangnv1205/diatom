@@ -482,7 +482,12 @@ static void usage(void)
 
 static const char *filter_name(diatom_filter f)
 {
-	return f == DIATOM_FILTER_SHARP ? "sharp" : "nearest";
+	switch (f) {
+	case DIATOM_FILTER_SHARP:    return "sharp";
+	case DIATOM_FILTER_SCANLINE: return "scanline";
+	case DIATOM_FILTER_GRID:     return "grid";
+	default:                     return "nearest";
+	}
 }
 
 static void apply_display(int mode, diatom_filter filter)
@@ -1016,6 +1021,8 @@ static void display_set(const diatom_msg *m)
 	if (m->dfilter[0]) {
 		if      (!strcmp(m->dfilter, "nearest")) filter = DIATOM_FILTER_NEAREST;
 		else if (!strcmp(m->dfilter, "sharp"))   filter = DIATOM_FILTER_SHARP;
+		else if (!strcmp(m->dfilter, "scanline")) filter = DIATOM_FILTER_SCANLINE;
+		else if (!strcmp(m->dfilter, "grid"))    filter = DIATOM_FILTER_GRID;
 		else {
 			diatom_proto_send("ERROR\tcode=bad_display\tmsg=%s", m->dfilter);
 			return;
@@ -1132,7 +1139,8 @@ static int run_session_inner(const diatom_session *sn)
 	double   frame_us, next_us;
 	uint64_t t_start, paused_us = 0;   /* menu time, excluded from the rate */
 	uint32_t buttons = 0, prev_buttons = 0, held_at_entry = 0;
-	uint32_t chord_hold = 0;    /* R1, while it belongs to MENU+R1 */
+	uint32_t chord_hold = 0;    /* R1 and L1, while they belong to MENU */
+	bool     rewinding = false; /* MENU+L1 held: step back, run nothing */
 	bool     menu_armed = false, menu_chorded = false;
 	long     fast_frames = 0, fast_turns = 0, fast_unshown = 0;
 	/* What a core frame costs, run to be shown and run to be skipped, kept
@@ -1162,6 +1170,7 @@ static int run_session_inner(const diatom_session *sn)
 	/* Per-game state that must not carry over from the previous session. */
 	g_speed = 1;
 	g_audio_fast = false;
+	diatom_rewind_reset();
 	g_present_frames = 0;
 	g_present_us = 0;
 	g_frame_w = g_frame_h = 0;
@@ -1423,7 +1432,9 @@ static int run_session_inner(const diatom_session *sn)
 		 * worth - or until the next one would not fit in the two periods less
 		 * what presenting costs, whichever comes first. The present cost is the
 		 * running average, so a cheaper display mode buys speed by itself. */
-		const bool fast = g_speed > 1;
+		/* Not while rewinding: a held MENU+L1 at 4x would run the game
+		 * forward faster than the ring steps it back. */
+		const bool fast = g_speed > 1 && !rewinding;
 		const int periods = fast ? 2 : 1;
 		/* Fast, at the top clock; see diatom_port_fast_clock. */
 		diatom_port_fast_clock(fast);
@@ -1453,6 +1464,15 @@ static int run_session_inner(const diatom_session *sn)
 		 * before, measured 2026-10-27. Each cost is now the whole step's, on
 		 * the wall clock, as the old rule's always was. */
 		const bool skips = fast && diatom_env_frame_skippable();
+		/* Rewinding: put the game back one snapshot, then run the one frame
+		 * the loop below runs anyway so there is a picture of where it now
+		 * is. Every other turn, so a held chord goes back at about twice
+		 * the speed it was recorded, as a tape rewinds. A set speed waits
+		 * while the chord is held (see `fast` above) and resumes after. */
+		if (rewinding) {
+			static int rw_turn;
+			if ((rw_turn++ & 1) == 0) diatom_rewind_step(g_core);
+		}
 		for (;;) {
 			bool     shown = true;
 			uint64_t s0 = diatom_port_now_us();
@@ -1496,6 +1516,10 @@ static int run_session_inner(const diatom_session *sn)
 		}
 		step_frames += ran;
 		step_periods += periods;
+		/* History is recorded at 1x only. Fast forward is the player saying
+		 * they do not care about these frames, and capturing at 4x would spend
+		 * the ring four times as fast on them. */
+		if (!fast && !rewinding) diatom_rewind_frames(g_core, ran);
 
 		if (fast) {
 			/* Silence for the time this turn stands for, so the queue holds
@@ -1640,8 +1664,19 @@ static int run_session_inner(const diatom_session *sn)
 		/* R1 belongs to MENU+R1 from the moment MENU is down - not from when
 		 * R1 is, so the frame R1 goes down cannot leak into the game - and
 		 * stays hidden after MENU is let go, until R1 is too. */
-		if (buttons & DIATOM_BIT(DIATOM_BTN_MENU)) chord_hold = DIATOM_BIT(DIATOM_BTN_R1);
-		else                                       chord_hold &= buttons;
+		if (buttons & DIATOM_BIT(DIATOM_BTN_MENU))
+			chord_hold = DIATOM_BIT(DIATOM_BTN_R1) | DIATOM_BIT(DIATOM_BTN_L1);
+		else
+			chord_hold &= buttons;
+
+		/* MENU+L1 held rewinds, for as long as both are down. Held, not
+		 * stepped like the speed: rewind is a gesture, and the player lets go
+		 * where they want to resume. It makes MENU a chord, so letting go of
+		 * MENU afterwards does not open the menu. */
+		rewinding = (buttons & DIATOM_BIT(DIATOM_BTN_MENU)) &&
+		            (buttons & DIATOM_BIT(DIATOM_BTN_L1)) &&
+		            diatom_rewind_available();
+		if (rewinding) menu_chorded = true;
 
 		/* The single writer. Every reason to hide a button from the core is
 		 * composed here, so no reason can clear another. */
@@ -1995,6 +2030,8 @@ int main(int argc, char **argv)
 	}
 	if (!strcmp(filter, "sharp"))        start_filter = DIATOM_FILTER_SHARP;
 	else if (!strcmp(filter, "nearest")) start_filter = DIATOM_FILTER_NEAREST;
+	else if (!strcmp(filter, "scanline")) start_filter = DIATOM_FILTER_SCANLINE;
+	else if (!strcmp(filter, "grid"))    start_filter = DIATOM_FILTER_GRID;
 	else {
 		fprintf(stderr, "diatom: unknown filter '%s'\n", filter);
 		usage();

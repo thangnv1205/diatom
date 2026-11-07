@@ -267,6 +267,14 @@ void diatom_save_shutdown(void);
 bool diatom_state_save(diatom_core *c, const char *path);
 bool diatom_state_load(diatom_core *c, const char *path);
 
+/* rewind.c - a bounded ring of whole states; MENU+L1 held steps back through
+ * it. reset at every session start, frames after each turn at 1x, step once
+ * per turn while the chord is held. */
+void diatom_rewind_reset(void);
+void diatom_rewind_frames(diatom_core *c, int ran);
+bool diatom_rewind_step(diatom_core *c);
+bool diatom_rewind_available(void);
+
 /* scale.c - geometry is arithmetic and lives here, once, so every port agrees.
  * Performing the blit is hardware and belongs to the port.
  *

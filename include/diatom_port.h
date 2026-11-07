@@ -46,7 +46,15 @@ typedef enum {
  * cannot be asked to present before it has been told how. */
 typedef enum {
 	DIATOM_FILTER_NEAREST,
-	DIATOM_FILTER_SHARP
+	DIATOM_FILTER_SHARP,
+	/* Sampled as NEAREST, then the last panel row of every source row is
+	 * dimmed (SCANLINE), or that row and the last panel column of every source
+	 * column (GRID, a handheld LCD's pixel gaps). Only where a source pixel is
+	 * at least two panel pixels tall or wide: below that there is no room for
+	 * a gap and dimming one would just darken the picture unevenly. A port
+	 * without the effect draws them as NEAREST. */
+	DIATOM_FILTER_SCANLINE,
+	DIATOM_FILTER_GRID
 } diatom_filter;
 
 typedef struct { int x, y, w, h; } diatom_rect;
