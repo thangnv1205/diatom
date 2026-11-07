@@ -147,7 +147,7 @@ $(CHEEVOS_TEST): test/cheevos_test.c src/cheevos.c $(RC_OBJ)
 	@mkdir -p $(BUILD)
 	$(CC) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -O2 \
 	      -Iinclude -Isrc -I$(RC_DIR)/include -DRC_DISABLE_LUA \
-	      -o $@ test/cheevos_test.c src/cheevos.c $(RC_OBJ)
+	      -o $@ test/cheevos_test.c src/cheevos.c $(RC_OBJ) -lm
 
 # Deliberately NOT part of `check`. It needs a build and it runs in real time -
 # Diatom paces to the core's frame rate, so 300 frames costs five seconds of
